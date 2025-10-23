@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Progressive Q-Learning Demo</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f0f4f8; color: #1e293b; }
+        .grid-container {
+            margin: 20px auto;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 0 10px rgba(0, 0, 0, 0.05);
+            background-color: #fff;
+            border-radius: 12px;
+            display: grid;
+            transition: all 0.5s ease-in-out;
+        }
+        .cell {
+            border: 1px solid #e2e8f0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            font-weight: 500;
+            transition: background-color 0.15s, transform 0.1s;
+        }
+        .agent { 
+            background-color: #10b981; 
+            color: white; 
+            border: 3px solid #059669;
+            border-radius: 4px;
+            font-size: 1.5rem;
+            animation: bounce 0.8s infinite alternate;
+        }
+        .goal { 
+            background-color: #f59e0b; 
+            font-size: 2rem;
+            color: white;
+            animation: pulse 1.5s infinite alternate;
+        }
+        .cliff {
+            background-color: #334155;
+            color: #f87171;
+            font-size: 1.5rem;
+        }
+        .training-log-container {
+            max-height: 400px;
+            overflow-y: auto;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+        }
+        .reward-btn { transition: transform 0.1s; }
+        .reward-btn:active { transform: scale(0.95); }
+        .disabled { opacity: 0.5; cursor: not-allowed; }
+
+        @keyframes pulse { from { opacity: 0.8; } to { opacity: 1; } }
+        @keyframes bounce { from { transform: scale(1); } to { transform: scale(1.05); } }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="max-w-6xl mx-auto bg-white rounded-xl shadow-2xl p-6 md:p-10">
+        <h1 class="text-4xl font-extrabold text-indigo-600 mb-2">Reinforcement Learning Playground</h1>
+        <p class="text-lg text-gray-500 mb-6">Teach the Q-Learning Agent across 5 progressive challenges!</p>
+
+        <div id="status-panel" class="bg-indigo-50 p-4 rounded-lg shadow-inner mb-6 flex justify-between items-center flex-wrap">
+            <span class="text-xl font-semibold">
+                Challenge: <span id="challenge-status" class="text-indigo-700">1</span>
+            </span>
+            <span class="text-lg">
+                Steps: <span id="step-counter" class="text-green-600 font-bold">0</span> | 
+                Episode: <span id="episode-counter" class="text-blue-600 font-bold">1</span>
+            </span>
+            <button id="next-challenge-btn" onclick="startNextChallenge()" 
+                class="mt-4 md:mt-0 px-4 py-2 bg-yellow-500 text-white font-bold rounded-lg shadow hover:bg-yellow-600 transition duration-150 disabled:opacity-50" disabled>
+                Next Challenge
+            </button>
+        </div>
+
+        <div class="lg:flex lg:space-x-8">
+            
+            <div class="flex-shrink-0 mx-auto" style="min-width: 350px;">
+                <div id="rl-grid" class="grid-container">
+                    </div>
+
+                <div class="buttons-container mt-6 flex justify-center space-x-4">
+                    <button class="reward-btn px-6 py-3 bg-green-500 text-white font-bold rounded-xl shadow-lg hover:bg-green-600" id="reward-plus" onclick="processFeedback(1)">
+                        +1 Good Move 👍
+                    </button>
+                    <button class="reward-btn px-6 py-3 bg-red-500 text-white font-bold rounded-xl shadow-lg hover:bg-red-600" id="reward-minus" onclick="processFeedback(-1)">
+                        -1 Bad Move 👎
+                    </button>
+                </div>
+                <p class="text-sm text-gray-500 mt-2">Click to provide Reward after the Agent moves.</p>
+            </div>
+
+            <div class="lg:w-1/2 mt-8 lg:mt-0">
+                <h2 class="text-2xl font-semibold mb-3 text-gray-700">Training Feedback</h2>
+                
+                <div class="bg-gray-100 p-4 rounded-lg shadow-inner mb-4">
+                    <h3 class="text-xl font-semibold text-gray-800 mb-2">Reward Values Explained</h3>
+                    <ul class="list-disc list-inside text-sm text-gray-600 space-y-1">
+                        <li>Manual Click: +1 (Good) or -1 (Bad). This is your lesson to the agent.</li>
+                        <li>Goal Reached (diamond): Automatic reward of +10.</li>
+                        <li>Cliff/Hazard (Challenge 5): Automatic penalty of -50.</li>
+                        <li>The Q-table (the agent's brain) updates based on this feedback, allowing it to learn paths.</li>
+                    </ul>
+                </div>
+
+                <h3 class="text-xl font-semibold mb-2 text-gray-700">Training Log (Last 10 Moves)</h3>
+                <div class="training-log-container">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50 sticky top-0">
+                            <tr>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Move #</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Direction</th>
+                                <th class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Reward</th>
+                            </tr>
+                        </thead>
+                        <tbody id="training-log-body" class="bg-white divide-y divide-gray-200">
+                            </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- GLOBAL RL PARAMETERS (Fixed for all challenges) ---
+        const ACTIONS = ['UP', 'DOWN', 'LEFT', 'RIGHT'];
+        const NUM_ACTIONS = ACTIONS.length;
+        const LEARNING_RATE = 0.5; // $\alpha$
+        const DISCOUNT_FACTOR = 0.9; // $\gamma$
+        const EXPLORATION_RATE = 0.3; // $\epsilon$
+        const GOAL_REWARD = 10;
+        const CLIFF_REWARD = -50;
+
+        // --- GLOBAL GAME STATE ---
+        let qTable = [];
+        let currentState = 0;
+        let previousState = -1;
+        let previousAction = -1;
+        let isWaitingForFeedback = false;
+        
+        let currentChallenge = 1;
+        let GRID_SIZE = 5;
+        let NUM_STATES = 25;
+        let GOAL_STATE = 24;
+        let CLIFF_STATES = []; 
+
+        let episode = 1;
+        let totalSteps = 0;
+        let trainingLog = []; // Stores recent log entries
+
+        // --- DOM ELEMENTS ---
+        const gridElement = document.getElementById('rl-grid');
+        const nextChallengeBtn = document.getElementById('next-challenge-btn');
+        const rewardPlusBtn = document.getElementById('reward-plus');
+        const rewardMinusBtn = document.getElementById('reward-minus');
+        const trainingLogBody = document.getElementById('training-log-body');
+
+        // --- UTILITY FUNCTIONS ---
+
+        function setupChallenge(challengeNum) {
+            currentChallenge = challengeNum;
+            currentState = 0; 
+            episode = 1;
+            totalSteps = 0;
+            CLIFF_STATES = []; 
+            trainingLog = []; // Reset log
+
+            if (challengeNum === 1) {
+                GRID_SIZE = 5; NUM_STATES = 25; GOAL_STATE = 24;
+            } else if (challengeNum === 2) {
+                GRID_SIZE = 10; NUM_STATES = 100; GOAL_STATE = 99;
+            } else if (challengeNum === 3) {
+                GRID_SIZE = 10; NUM_STATES = 100;
+                GOAL_STATE = Math.floor(Math.random() * (NUM_STATES - 1)) + 1;
+            } else if (challengeNum === 4) {
+                GRID_SIZE = 15; NUM_STATES = 225; GOAL_STATE = 224;
+            } else if (challengeNum === 5) {
+                GRID_SIZE = 10; NUM_STATES = 100; GOAL_STATE = 99;
+                // Cliff: states 91 through 98 (second to last row, excluding start/end)
+                for (let i = 91; i < 99; i++) {
+                    CLIFF_STATES.push(i);
+                }
+            }
+            
+            NUM_STATES = GRID_SIZE * GRID_SIZE;
+            qTable = Array(NUM_STATES).fill(0).map(() => Array(NUM_ACTIONS).fill(0));
+        }
+        
+        function drawGrid() {
+            gridElement.innerHTML = '';
+            const maxGridWidth = 400; // Max width for the grid area
+            const cellSize = Math.floor(maxGridWidth / GRID_SIZE);
+            gridElement.style.gridTemplateColumns = `repeat(${GRID_SIZE}, ${cellSize}px)`;
+            gridElement.style.gridTemplateRows = `repeat(${GRID_SIZE}, ${cellSize}px)`;
+            gridElement.style.width = `${GRID_SIZE * cellSize}px`;
+
+            for (let i = 0; i < NUM_STATES; i++) {
+                const cell = document.createElement('div');
+                cell.classList.add('cell');
+                cell.dataset.state = i;
+                cell.textContent = i; 
+                
+                if (i === GOAL_STATE) {
+                    cell.classList.add('goal');
+                    cell.textContent = '💎';
+                } else if (CLIFF_STATES.includes(i)) {
+                    cell.classList.add('cliff');
+                    cell.textContent = '❌';
+                }
+                
+                gridElement.appendChild(cell);
+            }
+        }
+
+        function updateLog(moveNum, direction, reward, isTerminal = false) {
+            const logEntry = {
+                move: moveNum,
+                direction: direction,
+                reward: reward,
+                terminal: isTerminal
+            };
+            trainingLog.unshift(logEntry); // Add to the start
+            if (trainingLog.length > 10) {
+                trainingLog.pop(); // Keep only the last 10 entries
+            }
+
+            trainingLogBody.innerHTML = trainingLog.map(entry => {
+                let colorClass = 'text-gray-900';
+                if (entry.reward > 0) colorClass = 'text-green-600 font-bold';
+                if (entry.reward < 0) colorClass = 'text-red-600 font-bold';
+                
+                const rewardText = entry.reward > 0 ? `+${entry.reward}` : entry.reward;
+
+                return `
+                    <tr class="${entry.terminal ? 'bg-yellow-50' : ''}">
+                        <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-500">${entry.move}</td>
+                        <td class="px-3 py-2 whitespace-nowrap text-sm font-medium">${entry.direction}</td>
+                        <td class="px-3 py-2 whitespace-nowrap text-sm ${colorClass}">${rewardText}</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function updateDisplay() {
+            // 1. Update Grid
+            document.querySelectorAll('.cell').forEach(cell => {
+                cell.classList.remove('agent');
+                // Restore content
+                if (cell.classList.contains('goal')) {
+                    cell.textContent = '💎';
+                } else if (cell.classList.contains('cliff')) {
+                    cell.textContent = '❌';
+                } else {
+                    cell.textContent = cell.dataset.state;
+                }
+            });
+            
+            const agentCell = document.querySelector(`.cell[data-state="${currentState}"]`);
+            if (agentCell && currentState !== GOAL_STATE && !CLIFF_STATES.includes(currentState)) {
+                agentCell.classList.add('agent');
+                agentCell.textContent = '🤖'; 
+            }
+
+            // 2. Update Counters and Buttons
+            document.getElementById('challenge-status').textContent = currentChallenge;
+            document.getElementById('episode-counter').textContent = episode;
+            document.getElementById('step-counter').textContent = totalSteps;
+            
+            const isFinished = currentState === GOAL_STATE || CLIFF_STATES.includes(currentState);
+            
+            if (isWaitingForFeedback && !isFinished) {
+                rewardPlusBtn.classList.remove('disabled');
+                rewardMinusBtn.classList.remove('disabled');
+                rewardPlusBtn.disabled = false;
+                rewardMinusBtn.disabled = false;
+            } else {
+                rewardPlusBtn.classList.add('disabled');
+                rewardMinusBtn.classList.add('disabled');
+                rewardPlusBtn.disabled = true;
+                rewardMinusBtn.disabled = true;
+            }
+            
+            // Update Next Challenge Button status
+            if (isFinished && currentChallenge < 5) {
+                 nextChallengeBtn.disabled = false;
+                 nextChallengeBtn.textContent = "Start Challenge " + (currentChallenge + 1) + " 🚀";
+            } else if (isFinished && currentChallenge === 5) {
+                nextChallengeBtn.disabled = true;
+                nextChallengeBtn.textContent = "All Challenges Complete!";
+            } else {
+                 nextChallengeBtn.disabled = true;
+                 nextChallengeBtn.textContent = "Next Challenge";
+            }
+        }
+
+        // --- CORE RL FUNCTIONS ---
+
+        function getNextState(state, actionIndex) {
+            const row = Math.floor(state / GRID_SIZE);
+            const col = state % GRID_SIZE;
+            let newRow = row;
+            let newCol = col;
+
+            switch (ACTIONS[actionIndex]) {
+                case 'UP':    newRow = Math.max(0, row - 1); break;
+                case 'DOWN':  newRow = Math.min(GRID_SIZE - 1, row + 1); break;
+                case 'LEFT':  newCol = Math.max(0, col - 1); break;
+                case 'RIGHT': newCol = Math.min(GRID_SIZE - 1, col + 1); break;
+            }
+            return newRow * GRID_SIZE + newCol;
+        }
+
+        function chooseAction(state) {
+            // $\epsilon$-greedy
+            if (Math.random() < EXPLORATION_RATE) {
+                return Math.floor(Math.random() * NUM_ACTIONS); // Explore
+            } else {
+                let maxQ = -Infinity;
+                let bestActions = [];
+                for (let a = 0; a < NUM_ACTIONS; a++) {
+                    if (qTable[state][a] > maxQ) {
+                        maxQ = qTable[state][a];
+                        bestActions = [a];
+                    } else if (qTable[state][a] === maxQ) {
+                        bestActions.push(a);
+                    }
+                }
+                return bestActions[Math.floor(Math.random() * bestActions.length)]; // Exploit 
+            }
+        }
+
+        function updateQTable(state, action, reward, newState) {
+            const oldQ = qTable[state][action];
+            
+            const isTerminal = (newState === GOAL_STATE || CLIFF_STATES.includes(newState));
+            const maxFutureQ = isTerminal ? 0 : Math.max(...qTable[newState]);
+            
+            const targetQ = reward + DISCOUNT_FACTOR * maxFutureQ;
+            qTable[state][action] = oldQ + LEARNING_RATE * (targetQ - oldQ);
+        }
+
+        // --- GAME FLOW / INTERACTION ---
+
+        function agentTakeAction() {
+            // If waiting for feedback or terminal, stop
+            if (isWaitingForFeedback || currentState === GOAL_STATE || CLIFF_STATES.includes(currentState)) return;
+
+            previousState = currentState;
+            previousAction = chooseAction(currentState);
+            
+            const nextState = getNextState(currentState, previousAction);
+            currentState = nextState;
+
+            isWaitingForFeedback = true;
+            totalSteps++;
+
+            updateDisplay();
+        }
+
+        function processFeedback(reward) {
+            if (!isWaitingForFeedback) return;
+
+            const newState = currentState; 
+            const action = previousAction;
+            const oldState = previousState;
+            const direction = ACTIONS[action];
+            
+            // Log the manual feedback
+            updateLog(totalSteps, direction, reward);
+
+            // Q-Learning Update with manual reward
+            updateQTable(oldState, action, reward, newState);
+
+            isWaitingForFeedback = false;
+            
+            // Check for Terminal States and provide final large reward/penalty
+            let terminalMessage = '';
+            let terminalReward = 0;
+            
+            if (currentState === GOAL_STATE) {
+                terminalReward = GOAL_REWARD;
+                updateQTable(oldState, action, terminalReward, newState);
+                terminalMessage = `GOAL 💎 Reached in Challenge ${currentChallenge} in ${totalSteps} steps!`;
+                updateLog(totalSteps, direction, terminalReward, true); // Log terminal reward
+            } else if (CLIFF_STATES.includes(currentState)) {
+                terminalReward = CLIFF_REWARD;
+                updateQTable(oldState, action, terminalReward, newState);
+                terminalMessage = `CLIFF 😵 Fell off in Challenge ${currentChallenge}! Episode reset.`;
+                updateLog(totalSteps, direction, terminalReward, true); // Log terminal reward
+            }
+
+            if (terminalMessage) {
+                alert(terminalMessage);
+                if (currentState !== GOAL_STATE) { // Reset if not goal
+                    episode++;
+                    currentState = 0;
+                    totalSteps = 0;
+                }
+            }
+            
+            // Agent moves again immediately after learning or resets if terminal
+            agentTakeAction(); 
+        }
+
+        function startNextChallenge() {
+            if (currentChallenge >= 5) return;
+
+            setupChallenge(currentChallenge + 1);
+            drawGrid();
+            
+            nextChallengeBtn.disabled = true;
+            nextChallengeBtn.textContent = `Start Challenge ${currentChallenge}`;
+            
+            isWaitingForFeedback = false; 
+            agentTakeAction();
+        }
+
+        function init() {
+            setupChallenge(1);
+            drawGrid();
+            updateDisplay();
+            agentTakeAction();
+        }
+
+        // --- INITIALIZATION ---
+        window.onload = init;
+
+    </script>
+
+</body>
+</html>
